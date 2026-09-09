@@ -19,11 +19,25 @@ import streamlit as st
 from app.video.reader import VideoReader, VideoMetadata
 from app.detection.detector import ObjectDetector, DetectionResult, DEFAULT_WAREHOUSE_CLASS_MAPPING
 from app.tracking.tracker import ObjectTracker, TrackingResult
+from app.behaviour.engine import BehaviourEngine, BehaviourConfig, BehaviourEvent
+from app.risk import (
+    RiskEngine,
+    RiskConfig,
+    EvidenceCollector,
+    RiskLevel,
+    DamageAssessmentStatus,
+    IncidentRecord,
+)
+from app.assistant import (
+    OperationsAssistant,
+    AssistantResponse,
+    QueryIntent,
+)
 
 
 # Page Configuration
 st.set_page_config(
-    page_title="Godrej Warehouse AI - Detection & Tracking",
+    page_title="Godrej Warehouse AI - Risk Engine & Operations Assistant",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -77,10 +91,10 @@ st.markdown(
 )
 
 # Header
-st.markdown('<div class="stage-badge">STAGE 3: DETECTION + TRACKING</div>', unsafe_allow_html=True)
+st.markdown('<div class="stage-badge">STAGE 5: RISK ENGINE & AI OPERATIONS ASSISTANT</div>', unsafe_allow_html=True)
 st.markdown('<div class="main-header">📦 Godrej Warehouse AI Video Intelligence</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-header">Multi-class object detection with ByteTrack persistent ID tracking and trajectory history.</div>',
+    '<div class="sub-header">Multi-class object detection, ByteTrack tracking, behaviour reasoning, explainable risk scoring, visual evidence capture, and grounded AI operations assistant.</div>',
     unsafe_allow_html=True,
 )
 
@@ -183,6 +197,31 @@ match_threshold = st.sidebar.slider(
     help="IoU threshold for matching detections to existing tracks.",
 )
 
+# Behaviour Reasoning Settings in Sidebar
+st.sidebar.markdown("---")
+st.sidebar.header("⚠️ Behaviour & Risk Engine")
+
+enable_behaviour = st.sidebar.checkbox(
+    "Enable Behaviour Reasoning",
+    value=True,
+    help="Detect violations: drops, throws, dragging, kicking/pushing, rolling, unstable stacking, pallet overhang.",
+)
+
+cooldown_window = st.sidebar.slider(
+    "Event Cooldown Window (frames)",
+    min_value=15,
+    max_value=180,
+    value=60,
+    step=15,
+    help="Cooldown frames before the same track can re-trigger the same violation.",
+)
+
+enable_risk = st.sidebar.checkbox(
+    "Enable Risk Engine & Evidence Capture",
+    value=True,
+    help="Classify incidents into LOW/MEDIUM/HIGH/CRITICAL and capture visual evidence keyframes & clips.",
+)
+
 # Load detector
 detector = load_detector(model_choice, conf_threshold, iou_threshold)
 detector.set_confidence_threshold(conf_threshold)
@@ -206,11 +245,13 @@ if video_path_to_process:
 
         st.markdown("---")
 
-        # Tabs for Detection, Tracking, and Inspection
-        tab1, tab2, tab3, tab4 = st.tabs([
+        # Tabs for Detection, Tracking, Behaviour, and Inspection
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "🔍 Frame-by-Frame Detection Inspector",
-            "🔗 Video Tracking Runner",
+            "🔗 Video Tracking & Risk Runner",
             "📊 Trajectory Analysis",
+            "🚨 Risk Engine & Incident Evidence",
+            "🤖 AI Operations Assistant",
             "🎬 Source Video & Info",
         ])
 
@@ -272,9 +313,9 @@ if video_path_to_process:
                 else:
                     st.error(f"Could not read frame #{frame_idx}.")
 
-        # TAB 2: Tracking Runner
+        # TAB 2: Tracking & Behaviour Runner
         with tab2:
-            st.subheader("Process Video with Detection + Tracking")
+            st.subheader("Process Video with Detection + Tracking + Behaviour Analysis")
             col_opt1, col_opt2 = st.columns(2)
             with col_opt1:
                 max_process_frames = st.number_input(
@@ -294,7 +335,7 @@ if video_path_to_process:
                     key="tracking_frame_skip",
                 )
 
-            if st.button("▶️ Run Detection + Tracking", type="primary"):
+            if st.button("▶️ Run Detection + Tracking + Behaviour + Risk", type="primary"):
                 # Initialise tracker fresh for each run
                 tracker = ObjectTracker(
                     track_activation_threshold=conf_threshold,
@@ -303,19 +344,34 @@ if video_path_to_process:
                     frame_rate=int(meta.fps) if meta.fps > 0 else 30,
                 )
 
+                # Initialise behaviour engine if enabled
+                behaviour_engine = None
+                if enable_behaviour:
+                    behaviour_config = BehaviourConfig(cooldown_frames=cooldown_window)
+                    behaviour_engine = BehaviourEngine(config=behaviour_config)
+
+                # Initialise risk engine & evidence collector if enabled
+                risk_engine = None
+                evidence_collector = None
+                if enable_risk:
+                    risk_engine = RiskEngine(config=RiskConfig())
+                    evidence_collector = EvidenceCollector(output_dir="outputs/evidence")
+
                 # Reset reader position
                 reader.seek_frame(0)
 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                alert_banner = st.empty()
                 video_placeholder = st.empty()
 
                 # Metrics containers
-                metric_cols = st.columns(4)
+                metric_cols = st.columns(5)
                 metric_frames = metric_cols[0].empty()
                 metric_detections = metric_cols[1].empty()
                 metric_active = metric_cols[2].empty()
                 metric_unique = metric_cols[3].empty()
+                metric_violations = metric_cols[4].empty()
 
                 active_tracks_placeholder = st.empty()
 
@@ -327,28 +383,80 @@ if video_path_to_process:
                     if idx % frame_skip != 0:
                         continue
 
-                    # Detect
+                    # Buffer frame for evidence extraction
+                    if evidence_collector is not None:
+                        evidence_collector.add_frame(idx, frame)
+
+                    # Stage 2: Detect
                     det_res = detector.detect(frame, frame_idx=idx, timestamp_seconds=ts, annotate=False)
                     total_detections += det_res.count
                     total_inference_time += det_res.inference_time_ms
 
-                    # Track
+                    # Stage 3: Track
                     trk_res = tracker.update(det_res, frame, annotate=True)
                     processed_count += 1
 
-                    # Live video frame display
+                    # Stage 4: Behaviour Reasoning
+                    frame_events = []
+                    if behaviour_engine is not None:
+                        frame_events = behaviour_engine.evaluate_frame(
+                            tracker=tracker,
+                            current_frame_idx=idx,
+                            timestamp=ts,
+                            fps=meta.fps,
+                        )
+
+                    # Stage 5: Risk Engine Evaluation & Evidence Capture
+                    frame_incidents = []
+                    if risk_engine is not None and frame_events:
+                        for ev in frame_events:
+                            incident = risk_engine.evaluate_event(ev)
+                            frame_incidents.append(incident)
+                            if evidence_collector is not None:
+                                evidence_collector.save_keyframe(incident, frame, annotate=True)
+                                evidence_collector.extract_clip(incident, fps=meta.fps)
+
+                    # Live video frame display with tracking + behaviour alert overlays
                     if trk_res.annotated_frame is not None:
+                        display_frame = trk_res.annotated_frame
+                        if behaviour_engine is not None:
+                            display_frame = behaviour_engine.annotate_events(
+                                frame=display_frame,
+                                events=frame_events,
+                                current_frame_idx=idx,
+                                tracked_objects=tracker.tracked_objects,
+                            )
+
+                        violation_count_now = len(behaviour_engine.all_events) if behaviour_engine else 0
                         video_placeholder.image(
-                            cv2.cvtColor(trk_res.annotated_frame, cv2.COLOR_BGR2RGB),
-                            caption=f"Frame #{idx} | Time: {ts:.2f}s | Active Tracks: {trk_res.active_count}",
+                            cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB),
+                            caption=f"Frame #{idx} | Time: {ts:.2f}s | Active Tracks: {trk_res.active_count} | Violations: {violation_count_now}",
                             use_container_width=True,
                         )
 
+                    # Display alert banner if incidents/violations occurred in this frame
+                    if frame_incidents:
+                        for inc in frame_incidents:
+                            alert_banner.error(
+                                f"🚨 **{inc.risk_level.value} RISK INCIDENT**: {inc.human_readable_name.upper()} on {inc.display_label} "
+                                f"(Score: {inc.risk_score:.0f}/100 | Frame #{idx} @ {ts:.2f}s)"
+                            )
+                    elif frame_events:
+                        for ev in frame_events:
+                            alert_banner.warning(
+                                f"⚠️ **VIOLATION DETECTED**: {ev.human_readable_name.upper()} on {ev.display_label} "
+                                f"(Frame #{idx} @ {ts:.2f}s)"
+                            )
+
                     # Update live metrics
                     metric_frames.metric("Frames", processed_count)
-                    metric_detections.metric("Total Detections", total_detections)
+                    metric_detections.metric("Detections", total_detections)
                     metric_active.metric("Active Tracks", trk_res.active_count)
                     metric_unique.metric("Unique Objects", tracker.total_unique_tracks)
+                    metric_violations.metric(
+                        "Violations",
+                        len(behaviour_engine.all_events) if behaviour_engine else 0,
+                    )
 
                     # Show active track labels
                     if trk_res.active_track_ids:
@@ -369,14 +477,21 @@ if video_path_to_process:
                 avg_latency = total_inference_time / processed_count if processed_count > 0 else 0
                 avg_fps = 1000.0 / avg_latency if avg_latency > 0 else 0
 
+                violation_total = len(behaviour_engine.all_events) if behaviour_engine else 0
+                incident_total = len(risk_engine.all_incidents) if risk_engine else 0
                 status_text.success(
                     f"✅ Processed {processed_count} frames! "
                     f"Avg Latency: {avg_latency:.1f} ms ({avg_fps:.1f} FPS) | "
-                    f"Unique Objects Tracked: {tracker.total_unique_tracks}"
+                    f"Unique Objects: {tracker.total_unique_tracks} | "
+                    f"Violations: {violation_total} | "
+                    f"Risk Incidents: {incident_total}"
                 )
 
-                # Store tracker in session state for trajectory analysis
+                # Store tracker, behaviour engine, and risk engine in session state
                 st.session_state["tracker_result"] = tracker
+                st.session_state["behaviour_engine"] = behaviour_engine
+                st.session_state["risk_engine"] = risk_engine
+                st.session_state["evidence_collector"] = evidence_collector
 
         # TAB 3: Trajectory Analysis
         with tab3:
@@ -482,10 +597,245 @@ if video_path_to_process:
                 else:
                     st.warning("No tracked objects found. Run the Tracking Runner first.")
             else:
-                st.info("👉 Run the **Video Tracking Runner** tab first to generate trajectory data.")
+                st.info("👉 Run the **Video Tracking & Behaviour Runner** tab first to generate trajectory data.")
 
-        # TAB 4: Source Video & Raw Metadata
+        # TAB 4: Risk Engine & Incident Evidence
         with tab4:
+            st.subheader("🚨 Risk Engine & Incident Evidence")
+
+            # Godrej Policy Banner
+            st.info(
+                "ℹ️ **Godrej Damage Assessment Policy**: "
+                "Observed Behaviour → Potential Damage Risk → Confirmed Damage. "
+                "Detected incidents represent Potential Risk to packaging integrity and trigger damage prevention workflows; "
+                "confirmed physical damage is only recorded upon physical verification."
+            )
+
+            risk_eng = st.session_state.get("risk_engine")
+            ev_collector = st.session_state.get("evidence_collector")
+
+            if risk_eng is not None:
+                incidents = risk_eng.all_incidents
+
+                if incidents:
+                    # Top 4 Risk Tier KPI metrics
+                    crit_count = sum(1 for i in incidents if i.risk_level == RiskLevel.CRITICAL)
+                    high_count = sum(1 for i in incidents if i.risk_level == RiskLevel.HIGH)
+                    med_count = sum(1 for i in incidents if i.risk_level == RiskLevel.MEDIUM)
+                    low_count = sum(1 for i in incidents if i.risk_level == RiskLevel.LOW)
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.metric("Critical Incidents", crit_count)
+                    with c2:
+                        st.metric("High Risk Incidents", high_count)
+                    with c3:
+                        st.metric("Medium Risk Incidents", med_count)
+                    with c4:
+                        st.metric("Low Risk Incidents", low_count)
+
+                    st.markdown("---")
+                    st.subheader("🔍 Incident Evidence Inspector")
+
+                    # Dropdown selector
+                    inc_labels = [
+                        f"[{i.risk_level.value}] {i.incident_id} — {i.human_readable_name} ({i.display_label} @ {i.timestamp_seconds:.2f}s)"
+                        for i in incidents
+                    ]
+                    selected_idx = st.selectbox(
+                        "Select an incident to view visual keyframe evidence and hazard diagnostics:",
+                        range(len(incidents)),
+                        format_func=lambda idx: inc_labels[idx],
+                    )
+                    selected_inc = incidents[selected_idx]
+
+                    col_ev1, col_ev2 = st.columns([1.2, 1.0])
+                    with col_ev1:
+                        st.markdown(f"#### Visual Keyframe Evidence ({selected_inc.incident_id})")
+                        if selected_inc.evidence_image_path and Path(selected_inc.evidence_image_path).exists():
+                            st.image(
+                                selected_inc.evidence_image_path,
+                                caption=f"Keyframe Snapshot | {selected_inc.display_label} | Frame #{selected_inc.frame_idx}",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.warning("Keyframe image not available.")
+
+                        if selected_inc.video_clip_path and Path(selected_inc.video_clip_path).exists():
+                            st.markdown("#### Video Clip Snippet")
+                            st.video(selected_inc.video_clip_path)
+
+                    with col_ev2:
+                        st.markdown("#### Risk Assessment Profile")
+
+                        # Risk Level Badge & Score
+                        st.markdown(
+                            f'<div style="background-color: {selected_inc.risk_level.color_hex}; color: white; '
+                            f'padding: 8px 16px; border-radius: 8px; font-size: 1.1rem; font-weight: 700; display: inline-block;">'
+                            f'{selected_inc.risk_level.value} RISK (Score: {selected_inc.risk_score:.0f}/100)</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.progress(selected_inc.risk_score / 100.0)
+
+                        st.markdown(f"**Damage Status:** `{selected_inc.damage_assessment.value}`")
+                        st.markdown(f"**Entity:** {selected_inc.display_label}" + (f" (Worker: {selected_inc.secondary_label})" if selected_inc.secondary_label else ""))
+                        st.markdown(f"**Timestamp:** {selected_inc.timestamp_seconds:.2f}s (Frame #{selected_inc.frame_idx})")
+                        st.markdown(f"**Visual Confidence:** {selected_inc.confidence * 100:.1f}%")
+
+                        st.markdown("##### Hazard Explanation:")
+                        st.info(selected_inc.explanation)
+
+                        st.markdown("##### Damage Prevention Recommendation:")
+                        st.success(selected_inc.recommendation)
+
+                        st.markdown("##### Kinematic Metrics:")
+                        st.json(selected_inc.metrics)
+
+                    st.markdown("---")
+                    st.subheader("📋 Complete Incident Manifest")
+                    manifest_records = []
+                    for inc in incidents:
+                        manifest_records.append({
+                            "Incident ID": inc.incident_id,
+                            "Risk Level": inc.risk_level.value,
+                            "Risk Score": f"{inc.risk_score:.0f}/100",
+                            "Violation Rule": inc.human_readable_name,
+                            "Target": inc.display_label,
+                            "Frame #": inc.frame_idx,
+                            "Time (s)": f"{inc.timestamp_seconds:.2f}",
+                            "Assessment": inc.damage_assessment.value,
+                            "Recommendation": inc.recommendation,
+                        })
+                    st.dataframe(pd.DataFrame(manifest_records), use_container_width=True)
+
+                    # Export JSON Manifest
+                    import json
+                    manifest_json = json.dumps([i.to_dict() for i in incidents], indent=2)
+                    st.download_button(
+                        label="📥 Download Incidents Manifest (JSON)",
+                        data=manifest_json,
+                        file_name="warehouse_incidents_manifest.json",
+                        mime="application/json",
+                    )
+
+                else:
+                    st.success("✅ **No handling risk incidents detected** in the processed frames. All observed handling conformed to safety policies.")
+            else:
+                st.info("👉 Run the **Video Tracking & Risk Runner** tab first to evaluate handling risks and capture evidence.")
+
+        # TAB 5: AI Operations Assistant
+        with tab5:
+            st.subheader("🤖 AI Operations Assistant")
+            st.markdown(
+                "Grounded operational query engine for warehouse supervisors. "
+                "Answers queries about handling violations, risk classifications, repeat infractions, "
+                "and prevention recommendations based strictly on verified incident telemetry."
+            )
+            st.info(
+                "ℹ️ **Godrej Damage Assessment Policy**: "
+                "Observed Behaviour → Potential Damage Risk → Confirmed Damage. "
+                "All incidents represent Potential Damage Risk (Unconfirmed); physical damage requires physical QA inspection."
+            )
+
+            # Determine available incidents
+            asst_incidents = []
+            source_note = ""
+            risk_eng = st.session_state.get("risk_engine")
+            if risk_eng is not None and risk_eng.all_incidents:
+                asst_incidents = risk_eng.all_incidents
+                source_note = f"Active session ({len(asst_incidents)} incidents evaluated from video)"
+            elif Path("outputs/evidence/incidents.json").exists():
+                manifest_path = Path("outputs/evidence/incidents.json")
+                temp_asst = OperationsAssistant.from_manifest(manifest_path)
+                asst_incidents = temp_asst.incidents
+                source_note = f"Loaded from `outputs/evidence/incidents.json` ({len(asst_incidents)} incidents)"
+
+            if asst_incidents:
+                assistant = OperationsAssistant.from_incidents(asst_incidents)
+                st.caption(f"📊 **Data Source**: {source_note}")
+
+                # Quick KPI Row
+                q_crit = sum(1 for i in asst_incidents if i.risk_level == RiskLevel.CRITICAL)
+                q_high = sum(1 for i in asst_incidents if i.risk_level == RiskLevel.HIGH)
+                q_med = sum(1 for i in asst_incidents if i.risk_level == RiskLevel.MEDIUM)
+                q_low = sum(1 for i in asst_incidents if i.risk_level == RiskLevel.LOW)
+
+                kpi_c1, kpi_c2, kpi_c3, kpi_c4, kpi_c5 = st.columns(5)
+                kpi_c1.metric("Total Incidents", len(asst_incidents))
+                kpi_c2.metric("Critical Risk", q_crit)
+                kpi_c3.metric("High Risk", q_high)
+                kpi_c4.metric("Medium Risk", q_med)
+                kpi_c5.metric("Low Risk", q_low)
+
+                st.markdown("#### ⚡ Quick Actions")
+                btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+
+                selected_quick_prompt = None
+                with btn_c1:
+                    if st.button("📋 Executive Summary", key="btn_summary", use_container_width=True):
+                        selected_quick_prompt = "Summarize the current incidents"
+                with btn_c2:
+                    if st.button("🚨 Top Highest Risks", key="btn_highest", use_container_width=True):
+                        selected_quick_prompt = "What are the highest-risk incidents?"
+                with btn_c3:
+                    if st.button("🔁 Repeat Infractions", key="btn_repeat", use_container_width=True):
+                        selected_quick_prompt = "Show repeat violations across all entities"
+                with btn_c4:
+                    if st.button("🛡️ Prevention Guide", key="btn_prevention", use_container_width=True):
+                        selected_quick_prompt = "What prevention recommendations apply?"
+
+                # Session chat history initialization
+                if "assistant_chat_history" not in st.session_state:
+                    st.session_state["assistant_chat_history"] = []
+
+                # Handle quick prompt or chat input
+                user_query = st.chat_input("Ask about incident causes, highest risks, Carton #7 history, or prevention...")
+                active_query = user_query or selected_quick_prompt
+
+                if active_query:
+                    res = assistant.ask(active_query)
+                    st.session_state["assistant_chat_history"].append({
+                        "user": active_query,
+                        "assistant": res.answer,
+                        "matched_incidents": res.matched_incidents,
+                    })
+
+                # Display Chat Messages
+                if st.session_state["assistant_chat_history"]:
+                    for chat_item in st.session_state["assistant_chat_history"]:
+                        with st.chat_message("user"):
+                            st.markdown(chat_item["user"])
+                        with st.chat_message("assistant"):
+                            st.markdown(chat_item["assistant"])
+
+                            # If matched incidents have evidence, show expandable preview
+                            matched = chat_item.get("matched_incidents", [])
+                            evidence_incidents = [m for m in matched if m.evidence_image_path and Path(m.evidence_image_path).exists()]
+                            if evidence_incidents:
+                                with st.expander(f"📷 View Visual Evidence for Referenced Incidents ({len(evidence_incidents)})"):
+                                    ev_cols = st.columns(min(3, len(evidence_incidents)))
+                                    for idx_ev, ev_inc in enumerate(evidence_incidents[:6]):
+                                        with ev_cols[idx_ev % len(ev_cols)]:
+                                            st.image(
+                                                ev_inc.evidence_image_path,
+                                                caption=f"{ev_inc.incident_id} | {ev_inc.display_label} ({ev_inc.risk_level.value})",
+                                                use_container_width=True,
+                                            )
+
+                    if st.button("🗑️ Clear Chat History", key="clear_chat_btn"):
+                        st.session_state["assistant_chat_history"] = []
+                        st.rerun()
+
+            else:
+                st.warning(
+                    "⚠️ **No incident records available to query.**\n\n"
+                    "To use the assistant:\n"
+                    "1. Run the **Video Tracking & Risk Runner** tab on a video, OR\n"
+                    "2. Run `python scripts/generate_evidence.py` to generate synthetic warehouse incident data."
+                )
+
+        # TAB 6: Source Video & Raw Metadata
+        with tab6:
             st.subheader("Source Video Stream")
             st.video(video_path_to_process)
             st.markdown("#### Technical Stream Properties")
@@ -501,12 +851,16 @@ if video_path_to_process:
 else:
     st.info("👆 Please upload an MP4 video or select a sample in the sidebar to start detection & tracking.")
     st.markdown(
-        """
-        ### Stage 3 Capabilities:
-        - **YOLO Detection:** Decoupled `ObjectDetector` with YOLOv8 / YOLO11 support.
-        - **ByteTrack Tracking:** Persistent object IDs across frames using `supervision.ByteTrack`.
-        - **Trajectory History:** Full per-object trajectory with frame, timestamp, bbox, center, and confidence.
-        - **Live Visualisation:** Bounding boxes with track ID labels (e.g., *Person #3*, *Carton #7*) and trajectory trails.
-        - **Trajectory Analysis:** Interactive per-track inspection with displacement charts.
+        r"""
+        ### Stage 5 Capabilities:
+        - **YOLO Detection:** Multi-class detection with YOLOv8 / YOLO11 backbone.
+        - **ByteTrack Tracking:** Persistent object IDs and trajectory histories across frames.
+        - **Temporal Behaviour Rules:** 7 core rules (Drop, Throw, Drag, Push/Kick, Roll, Stacking, Pallet Overhang).
+        - **Risk Engine:** Explainable, rule-based risk classification into **LOW**, **MEDIUM**, **HIGH**, and **CRITICAL** tiers.
+        - **Metric Escalation:** Velocity, impulse, duration, overhang, and stacking offset multipliers.
+        - **Chronic Repeat Penalty:** Multi-infraction escalation on identical entities to trigger quarantine review.
+        - **Incident Evidence Capture:** Automatic annotated keyframe screenshots, before/after video clips, and JSON manifests.
+        - **AI Operations Assistant:** Grounded, explainable supervisor query engine answering incident, risk, and repeat infraction questions.
+        - **Responsible AI:** Strictly separates *Observed Behaviour* from *Potential Damage Risk* and *Confirmed Damage*.
         """
     )

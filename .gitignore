@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Large ML model files
+*.pt
+*.onnx
+*.weights
+
+# Video files
+videos/*.mp4
+videos/*.avi
+videos/*.mov
+videos/*.mkv
+
+# Generated outputs
+outputs/
+
+# Streamlit
+.streamlit/secrets.toml

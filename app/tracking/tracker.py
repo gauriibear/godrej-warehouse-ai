@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import warnings
+
 import cv2
 import numpy as np
 import supervision as sv
@@ -20,7 +22,10 @@ from app.detection.detector import Detection, DetectionResult, CLASS_COLOR_PALET
 
 @dataclass
 class TrackPoint:
-    """A single observation of a tracked object at a specific frame."""
+    """
+    A single observation of a tracked object at a specific frame.
+    Stores full spatial, temporal, and tracking metadata.
+    """
     frame_idx: int
     timestamp_seconds: float
     track_id: int
@@ -30,16 +35,50 @@ class TrackPoint:
     center: Tuple[int, int]           # (cx, cy)
     confidence: float
 
+    # ── Convenience properties matching Stage 3 specification ──────────────
+    @property
+    def timestamp(self) -> float:
+        """Timestamp in seconds."""
+        return self.timestamp_seconds
+
+    @property
+    def frame_number(self) -> int:
+        """Sequential video frame number."""
+        return self.frame_idx
+
+    @property
+    def object_id(self) -> int:
+        """Persistent object track ID."""
+        return self.track_id
+
+    @property
+    def bounding_box(self) -> Tuple[int, int, int, int]:
+        """Bounding box in (x1, y1, x2, y2) format."""
+        return self.bbox
+
+    @property
+    def center_point(self) -> Tuple[int, int]:
+        """Centroid coordinates (cx, cy)."""
+        return self.center
+
     def to_dict(self) -> dict:
         return {
-            "frame_idx": self.frame_idx,
+            # Standard Stage 3 specification keys
             "timestamp": round(self.timestamp_seconds, 4),
+            "frame_number": self.frame_idx,
+            "object_id": self.track_id,
+            "class": self.class_name,
+            "bounding_box": list(self.bbox),
+            "center_point": list(self.center),
+            "confidence": round(self.confidence, 4),
+            # Backwards compatibility keys
+            "frame_idx": self.frame_idx,
+            "timestamp_seconds": round(self.timestamp_seconds, 4),
             "track_id": self.track_id,
             "class_name": self.class_name,
             "raw_class_name": self.raw_class_name,
             "bbox": list(self.bbox),
             "center": list(self.center),
-            "confidence": round(self.confidence, 4),
         }
 
 
@@ -54,7 +93,19 @@ class TrackedObject:
     @property
     def display_label(self) -> str:
         """Human-readable label like 'Person #3' or 'Carton #7'."""
-        pretty = self.class_name.replace("/", " / ").title()
+        name = self.class_name.lower()
+        if "carton" in name or "product" in name or "box" in name or "package" in name:
+            pretty = "Carton"
+        elif "person" in name:
+            pretty = "Person"
+        elif "forklift" in name:
+            pretty = "Forklift"
+        elif "pallet" in name:
+            pretty = "Pallet"
+        elif "machinery" in name:
+            pretty = "Machinery"
+        else:
+            pretty = self.class_name.replace("/", " ").title().strip()
         return f"{pretty} #{self.track_id}"
 
     @property
@@ -150,13 +201,15 @@ class ObjectTracker:
             frame_rate: Expected video frame rate (used by ByteTrack internals).
             minimum_consecutive_frames: Consecutive detections required before a track is confirmed.
         """
-        self._byte_tracker = sv.ByteTrack(
-            track_activation_threshold=track_activation_threshold,
-            lost_track_buffer=lost_track_buffer,
-            minimum_matching_threshold=minimum_matching_threshold,
-            frame_rate=frame_rate,
-            minimum_consecutive_frames=minimum_consecutive_frames,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            self._byte_tracker = sv.ByteTrack(
+                track_activation_threshold=track_activation_threshold,
+                lost_track_buffer=lost_track_buffer,
+                minimum_matching_threshold=minimum_matching_threshold,
+                frame_rate=frame_rate,
+                minimum_consecutive_frames=minimum_consecutive_frames,
+            )
 
         # Global track registry: track_id → TrackedObject
         self._tracked_objects: Dict[int, TrackedObject] = {}

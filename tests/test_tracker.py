@@ -47,17 +47,36 @@ def test_track_point_creation():
     assert d["center"] == [200, 300]
     assert d["confidence"] == 0.92
 
+    # Verify 7 required Stage 3 fields are accessible as properties and dict keys
+    assert tp.timestamp == 0.167
+    assert tp.frame_number == 5
+    assert tp.object_id == 3
+    assert tp.class_name == "person"
+    assert tp.bounding_box == (100, 150, 300, 450)
+    assert tp.center_point == (200, 300)
+    assert tp.confidence == 0.92
+
+    assert d["timestamp"] == 0.167
+    assert d["frame_number"] == 5
+    assert d["object_id"] == 3
+    assert d["class"] == "person"
+    assert d["bounding_box"] == [100, 150, 300, 450]
+    assert d["center_point"] == [200, 300]
+    assert d["confidence"] == 0.92
+
 
 # ──────────────────────── TrackedObject Tests ───────────────────────────────
 
 def test_tracked_object_display_label():
-    """Validates human-readable display labels."""
-    obj = TrackedObject(track_id=7, class_name="product/carton", raw_class_name="backpack")
-    assert "7" in obj.display_label
-    assert "Product" in obj.display_label or "Carton" in obj.display_label
+    """Validates human-readable display labels for Person #3 and Carton #7."""
+    carton = TrackedObject(track_id=7, class_name="product/carton", raw_class_name="backpack")
+    assert carton.display_label == "Carton #7"
 
-    obj2 = TrackedObject(track_id=3, class_name="person", raw_class_name="person")
-    assert obj2.display_label == "Person #3"
+    carton_direct = TrackedObject(track_id=7, class_name="carton", raw_class_name="box")
+    assert carton_direct.display_label == "Carton #7"
+
+    person = TrackedObject(track_id=3, class_name="person", raw_class_name="person")
+    assert person.display_label == "Person #3"
 
 
 def test_tracked_object_trajectory_properties():
@@ -268,7 +287,7 @@ def test_tracker_accumulates_trajectory_across_frames():
         f"Expected trajectory with ≥5 points, got {best_obj.frame_count}"
     )
 
-    # Verify trajectory data integrity
+    # Verify trajectory data integrity with all 7 Stage 3 fields
     for tp in best_obj.trajectory:
         assert tp.frame_idx >= 0
         assert tp.timestamp_seconds >= 0.0
@@ -276,6 +295,14 @@ def test_tracker_accumulates_trajectory_across_frames():
         assert tp.class_name == "person"
         assert len(tp.bbox) == 4
         assert len(tp.center) == 2
+        assert 0.0 <= tp.confidence <= 1.0
+
+        # Stage 3 required property aliases
+        assert tp.timestamp >= 0.0
+        assert tp.frame_number >= 0
+        assert tp.object_id == best_obj.track_id
+        assert tp.bounding_box == tp.bbox
+        assert tp.center_point == tp.center
         assert 0.0 <= tp.confidence <= 1.0
 
     # Verify trajectory shows movement (x coordinates should increase)

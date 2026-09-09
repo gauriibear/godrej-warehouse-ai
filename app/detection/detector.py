@@ -42,8 +42,11 @@ DEFAULT_WAREHOUSE_CLASS_MAPPING: Dict[str, str] = {
 CLASS_COLOR_PALETTE: Dict[str, Tuple[int, int, int]] = {
     "person": (255, 140, 0),             # Deep Sky Blue / Cyan (in BGR: (0, 140, 255) / (255, 140, 0))
     "product/carton": (50, 205, 50),     # Lime / Emerald Green
+    "carton": (50, 205, 50),             # Lime / Emerald Green
     "equipment/forklift": (0, 165, 255), # Amber / Orange
+    "forklift": (0, 165, 255),           # Amber / Orange
     "equipment/machinery": (0, 215, 255),# Gold
+    "machinery": (0, 215, 255),          # Gold
     "pallet": (180, 105, 255),           # Purple / Pink
     "pallet/structure": (147, 112, 219), # Medium Purple
     "pallet/rack": (128, 128, 240),      # Slate Blue
