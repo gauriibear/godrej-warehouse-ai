@@ -1,0 +1,20 @@
+# Core Vision & Object Tracking
+ultralytics>=8.3.0
+supervision>=0.24.0
+opencv-python>=4.10.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Dashboard & Visualization
+streamlit>=1.38.0
+plotly>=5.22.0
+pillow>=10.4.0
+
+# Database & Storage
+sqlalchemy>=2.0.0
+pydantic>=2.7.0
+pyyaml>=6.0.1
+
+# AI Supervisor Assistant
+langchain-core>=0.2.0
+python-dotenv>=1.0.0
