@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.analytics.engine import AnalyticsEngine, BEHAVIOUR_PREVENTION_MAP
 from app.risk.models import (
     DamageAssessmentStatus,
     IncidentRecord,
@@ -34,6 +35,9 @@ class QueryIntent(str, Enum):
     FILTER_RISK = "FILTER_RISK"
     BEHAVIOUR_FREQUENCY = "BEHAVIOUR_FREQUENCY"
     FREQUENCY = "BEHAVIOUR_FREQUENCY"
+    ANALYTICS_RISK = "ANALYTICS_RISK"
+    ANALYTICS_LOCATION = "ANALYTICS_LOCATION"
+    PREVENTION_PRIORITIES = "PREVENTION_PRIORITIES"
     FALLBACK = "FALLBACK"
 
 
@@ -138,6 +142,7 @@ class OperationsAssistant:
             RiskLevel.CRITICAL: [],
         }
         self._by_rule: Dict[str, List[IncidentRecord]] = {}
+        self.analytics_engine: AnalyticsEngine = AnalyticsEngine([])
 
         if incidents:
             self.set_incidents(incidents)
@@ -186,6 +191,7 @@ class OperationsAssistant:
     def set_incidents(self, incidents: List[IncidentRecord]) -> None:
         """Updates the assistant's incident records and rebuilds fast lookup indexes."""
         self.incidents = list(incidents)
+        self.analytics_engine = AnalyticsEngine(self.incidents)
         self._by_id.clear()
         self._by_track.clear()
         self._by_level = {
@@ -252,9 +258,71 @@ class OperationsAssistant:
             any(re.search(pat, q_lower) for pat in freq_patterns)
         )
 
+        # Check for Location / Zone Analytics query patterns
+        loc_keywords = [
+            "which location", "which zone", "where do most", "location has the most",
+            "zone has the most", "highest risk location", "highest risk zone", "top risk location",
+            "location analytics", "zone analytics", "location breakdown", "zone breakdown",
+            "incidents by location", "incidents by zone", "location trends", "zone trends",
+            "incident location", "where did incidents occur", "location risk",
+        ]
+        loc_patterns = [
+            r"\b(?:which|what)\s+(?:location|zone|bay|area)\b",
+            r"\b(?:location|zone|bay)\s+(?:analytics|breakdown|distribution|trends?)\b",
+            r"\bwhere\s+do\s+most\b",
+        ]
+        is_location_query = (
+            any(k in q_lower for k in loc_keywords) or
+            any(re.search(pat, q_lower) for pat in loc_patterns)
+        )
+
+        # Check for Prevention Priorities / Supervisor Focus query patterns
+        priority_keywords = [
+            "supervisor focus", "focus on", "focus areas", "prevention priorities",
+            "prevention priority", "main prevention priorities", "top prevention priorities",
+            "what should the supervisor focus on", "what should supervisor focus on",
+            "what should we prioritize", "what should managers prioritize",
+            "what should warehouse managers prioritize", "supervisor priority",
+            "supervisor priorities", "key priorities", "mitigation priorities",
+        ]
+        priority_patterns = [
+            r"\bwhat\s+should\s+(?:the\s+)?(?:supervisor|managers?|we|team)\s+focus\s+on\b",
+            r"\b(?:prevention|supervisor|mitigation)\s+priorit(?:y|ies)\b",
+            r"\bwhat\s+(?:are|is)\s+(?:the\s+)?(?:main|key|top)\s+prevention\s+priorit(?:y|ies)\b",
+        ]
+        is_priority_query = (
+            any(k in q_lower for k in priority_keywords) or
+            any(re.search(pat, q_lower) for pat in priority_patterns)
+        )
+
+        # Check for Risk Analytics & Distribution query patterns
+        risk_analytics_keywords = [
+            "how many critical", "how many high risk", "how many medium risk", "how many low risk",
+            "how many high-risk", "how many medium-risk", "how many low-risk",
+            "risk distribution", "distribution of risk", "risk breakdown", "average risk score",
+            "average risk", "max risk score", "highest risk score", "breakdown of risk",
+            "risk score average", "show me the risk distribution", "show the risk distribution",
+        ]
+        risk_analytics_patterns = [
+            r"\bhow\s+many\s+(?:critical|high|medium|low)(?:-|\s+)?(?:risk)?\s+incidents?\b",
+            r"\b(?:show(?:\s+me)?\s+)?(?:the\s+)?risk\s+(?:distribution|breakdown)\b",
+            r"\bdistribution\s+of\s+risk\b",
+            r"\baverage\s+risk\s+score\b",
+        ]
+        is_risk_analytics_query = (
+            any(k in q_lower for k in risk_analytics_keywords) or
+            any(re.search(pat, q_lower) for pat in risk_analytics_patterns)
+        )
+
         if not self.incidents:
             if is_frequency_query:
                 return self.get_behaviour_frequency()
+            if is_location_query:
+                return self.get_location_analytics()
+            if is_priority_query:
+                return self.get_prevention_priorities()
+            if is_risk_analytics_query:
+                return self.get_risk_distribution(query=q_clean)
             return AssistantResponse(
                 answer=(
                     "⚠️ **No incident records are currently loaded in the system.**\n\n"
@@ -273,11 +341,23 @@ class OperationsAssistant:
             target_id = match_inc.group(1)
             return self.get_incident_diagnosis(target_id)
 
-        # 2. Check for Behaviour Frequency / Trend query
+        # 2. Check for Location / Zone Analytics query
+        if is_location_query:
+            return self.get_location_analytics()
+
+        # 3. Check for Prevention Priorities / Supervisor Focus query
+        if is_priority_query:
+            return self.get_prevention_priorities()
+
+        # 4. Check for Risk Distribution & Analytics query
+        if is_risk_analytics_query:
+            return self.get_risk_distribution(query=q_clean)
+
+        # 5. Check for Behaviour Frequency / Trend query
         if is_frequency_query:
             return self.get_behaviour_frequency()
 
-        # 3. Check for Repeat Violation / Tracked Object History query
+        # 6. Check for Repeat Violation / Tracked Object History query
         repeat_keywords = ["repeat", "chronic", "multiple times", "again", "recurring", "multiple infractions"]
         is_repeat_query = any(k in q_lower for k in repeat_keywords)
 
@@ -291,7 +371,7 @@ class OperationsAssistant:
         elif is_repeat_query:
             return self.get_repeat_history(track_id=None)
 
-        # 3. Check for Highest Risk / Critical Incidents query
+        # 7. Check for Highest Risk / Critical Incidents query
         highest_risk_keywords = [
             "highest risk", "highest-risk", "top risk", "top risks", "most severe",
             "worst", "critical incident", "critical incidents", "high risk incidents",
@@ -300,14 +380,14 @@ class OperationsAssistant:
         if any(k in q_lower for k in highest_risk_keywords):
             return self.get_highest_risk()
 
-        # 4. Check for Prevention / Mitigation Recommendation query
+        # 8. Check for Prevention / Mitigation Recommendation query
         rec_keywords = ["prevent", "prevention", "recommend", "recommendation", "mitigate", "mitigation", "how to fix", "how do we prevent", "guideline"]
         if any(k in q_lower for k in rec_keywords):
             # Extract target rule if present
             matched_rule = self._extract_rule(q_lower)
             return self.get_recommendations(target=matched_rule)
 
-        # 5. Check for Executive Summary / Overview query
+        # 9. Check for Executive Summary / Overview query
         summary_keywords = [
             "summarize", "summary", "overview", "what happened", "status report",
             "incident count", "overall", "total incidents", "briefing", "report",
@@ -315,17 +395,17 @@ class OperationsAssistant:
         if any(k in q_lower for k in summary_keywords):
             return self.get_summary()
 
-        # 6. Check for Filter by Rule (e.g. "show all drops", "dragging events")
+        # 10. Check for Filter by Rule (e.g. "show all drops", "dragging events")
         matched_rule = self._extract_rule(q_lower)
         if matched_rule:
             return self.get_filtered(rule_name=matched_rule)
 
-        # 7. Check for Filter by Risk Level (e.g. "show critical", "show medium risks")
+        # 11. Check for Filter by Risk Level (e.g. "show critical", "show medium risks")
         matched_level = self._extract_risk_level(q_lower)
         if matched_level:
             return self.get_filtered(risk_level=matched_level)
 
-        # 8. Fallback for unrecognized questions
+        # 12. Fallback for unrecognized questions
         return self.get_help_fallback(query)
 
     def _extract_rule(self, text: str) -> Optional[str]:
@@ -489,6 +569,140 @@ class OperationsAssistant:
                 "most_frequent_behaviour": top_name if len(tied_top) == 1 else tied_top,
                 "highest_count": top_count,
                 "frequency_ranking": ranking_data,
+            },
+        )
+
+    def get_location_analytics(self) -> AssistantResponse:
+        """Analyzes spatial and location data across recorded incidents."""
+        analytics = self.analytics_engine.analyze()
+        loc_data = analytics.location_analysis
+
+        if loc_data == "location_data_unavailable" or not isinstance(loc_data, dict):
+            answer = (
+                "ℹ️ **Location/Zone Analytics Unavailable**\n\n"
+                "The current incident telemetry does not contain designated location, loading bay, "
+                "or zone identifiers (`location_data_unavailable`).\n\n"
+                "To enable spatial heatmaps and location analytics, configure camera bay and floor zone "
+                "metadata in the warehouse camera topology.\n\n"
+                f"{self.POLICY_DISCLAIMER}"
+            )
+            return AssistantResponse(
+                answer=answer,
+                intent=QueryIntent.ANALYTICS_LOCATION,
+                matched_incidents=[],
+                data={
+                    "location_data_unavailable": True,
+                    "location_counts": "location_data_unavailable",
+                    "highest_risk_location": "location_data_unavailable",
+                },
+            )
+
+        lines = []
+        for loc_name, item in loc_data.items():
+            lines.append(
+                f"- **{loc_name}**: **{item.incident_count} incident(s)** ({item.percentage}%) | "
+                f"Avg Risk: **{item.average_risk_score:.1f}/100** | "
+                f"Critical: {item.risk_distribution.get('CRITICAL', 0)}, High: {item.risk_distribution.get('HIGH', 0)}"
+            )
+
+        answer = (
+            f"### 📍 Warehouse Location & Zone Risk Analytics\n\n"
+            f"Highest-risk location: **{analytics.highest_risk_location}**\n\n"
+            f"#### Location Incident Breakdown:\n"
+            + "\n".join(lines) + "\n\n"
+            f"{self.POLICY_DISCLAIMER}"
+        )
+        return AssistantResponse(
+            answer=answer,
+            intent=QueryIntent.ANALYTICS_LOCATION,
+            matched_incidents=self.incidents,
+            data={
+                "location_counts": analytics.location_counts,
+                "highest_risk_location": analytics.highest_risk_location,
+                "location_analysis": {k: v.to_dict() for k, v in loc_data.items()},
+            },
+        )
+
+    def get_prevention_priorities(self) -> AssistantResponse:
+        """Synthesizes prioritized operational recommendations for warehouse supervisors."""
+        analytics = self.analytics_engine.analyze()
+        insights = analytics.prevention_insights
+
+        lines = []
+        for idx, ins in enumerate(insights, 1):
+            severity_badge = f"[{ins.severity}]" if ins.severity else ""
+            lines.append(
+                f"{idx}. **{ins.title}** {severity_badge}\n"
+                f"   - **Observation**: {ins.observation}\n"
+                f"   - **Priority Action**: {ins.recommendation}"
+            )
+
+        answer = (
+            "### 🎯 Warehouse Supervisor Focus & Prevention Priorities\n\n"
+            "Based on deterministic analysis of current incident frequencies, risk severity tiers, "
+            "and repeat infraction patterns, the following priority actions are recommended:\n\n"
+            + "\n\n".join(lines) + "\n\n"
+            f"{self.POLICY_DISCLAIMER}"
+        )
+
+        return AssistantResponse(
+            answer=answer,
+            intent=QueryIntent.PREVENTION_PRIORITIES,
+            matched_incidents=self.incidents,
+            data={
+                "priorities": [ins.to_dict() for ins in insights],
+                "total_priorities": len(insights),
+            },
+        )
+
+    def get_risk_distribution(self, query: str = "") -> AssistantResponse:
+        """Provides risk tier counts, percentages, and score statistics from analytics."""
+        analytics = self.analytics_engine.analyze()
+        r_counts = analytics.risk_counts
+        r_pcts = analytics.risk_percentages
+        total = analytics.total_incidents
+
+        # Specific query highlighting (e.g. "how many critical incidents")
+        specific_note = ""
+        q_lower = query.lower()
+        for lvl in ["critical", "high", "medium", "low"]:
+            if f"how many {lvl}" in q_lower or f"{lvl} incident" in q_lower:
+                lvl_upper = lvl.upper()
+                cnt = r_counts.get(lvl_upper, 0)
+                pct = r_pcts.get(lvl_upper, 0.0)
+                specific_note = f"There {'was' if cnt == 1 else 'were'} **{cnt} {lvl_upper} risk incident{'s' if cnt != 1 else ''}** ({pct}% of total incidents).\n\n"
+                break
+
+        highest_note = ""
+        if analytics.highest_risk_incident:
+            h_inc = analytics.highest_risk_incident
+            highest_note = f"The highest-risk incident is **`{h_inc.get('incident_id')}`** with a risk score of **{analytics.max_risk_score:.0f}/100** ({h_inc.get('human_readable_name')}).\n\n"
+
+        answer = (
+            f"### 📊 Warehouse Handling Risk Distribution\n\n"
+            f"{specific_note}"
+            f"Across **{total} total incident(s)** evaluated by the Risk Engine:\n\n"
+            f"- 🔴 **CRITICAL Risk**: {r_counts.get('CRITICAL', 0)} ({r_pcts.get('CRITICAL', 0.0)}%)\n"
+            f"- 🟠 **HIGH Risk**: {r_counts.get('HIGH', 0)} ({r_pcts.get('HIGH', 0.0)}%)\n"
+            f"- 🟡 **MEDIUM Risk**: {r_counts.get('MEDIUM', 0)} ({r_pcts.get('MEDIUM', 0.0)}%)\n"
+            f"- 🔵 **LOW Risk**: {r_counts.get('LOW', 0)} ({r_pcts.get('LOW', 0.0)}%)\n\n"
+            f"**Average Risk Score**: {analytics.average_risk_score:.1f}/100\n"
+            f"**Maximum Risk Score**: {analytics.max_risk_score:.0f}/100\n\n"
+            f"{highest_note}"
+            f"{self.POLICY_DISCLAIMER}"
+        )
+
+        return AssistantResponse(
+            answer=answer,
+            intent=QueryIntent.ANALYTICS_RISK,
+            matched_incidents=self.incidents,
+            data={
+                "total_incidents": total,
+                "risk_counts": r_counts,
+                "risk_percentages": r_pcts,
+                "average_risk_score": analytics.average_risk_score,
+                "max_risk_score": analytics.max_risk_score,
+                "highest_risk_incident": analytics.highest_risk_incident,
             },
         )
 
@@ -804,10 +1018,13 @@ class OperationsAssistant:
             "- 📊 **Summary**: *\"Summarize current incidents\"* or *\"What happened today?\"*\n"
             "- 🚨 **Highest Risk**: *\"What are the highest-risk incidents?\"* or *\"Show critical incidents\"*\n"
             f"- 🔍 **Diagnosis**: *\"Why was {sample_id} classified as critical?\"* or *\"Explain {sample_id}\"*\n"
-            "- 🔁 **Repeat Infractions**: *\"What happened to Carton #7?\"* or *\"Show repeat violations\"*\n"
-            "- 🛡️ **Prevention**: *\"What prevention recommendations apply?\"* or *\"How do we prevent drops?\"*\n"
+            "- 🔁 **Repeat Infractions**: *\"What happened to Carton #7?\"* or *\"Which product had repeated violations?\"*\n"
             "- 📈 **Frequency & Trends**: *\"Which behaviour occurs most frequently?\"* or *\"What is the most common violation?\"*\n"
-            "- 🎯 **Filter**: *\"Show all dragged cartons\"* or *\"List high risk incidents\"*\n\n"
+            "- 📊 **Risk Distribution**: *\"Show me the risk distribution\"* or *\"How many critical incidents occurred?\"*\n"
+            "- 📍 **Location Analytics**: *\"Which location has the most incidents?\"* or *\"Location analytics\"*\n"
+            "- 🎯 **Supervisor Priorities**: *\"What should the supervisor focus on?\"* or *\"What are the main prevention priorities?\"*\n"
+            "- 🛡️ **Prevention**: *\"What prevention recommendations apply?\"* or *\"How do we prevent drops?\"*\n"
+            "- 🔍 **Filter**: *\"Show all dragged cartons\"* or *\"List high risk incidents\"*\n\n"
             f"{self.POLICY_DISCLAIMER}"
         )
         return AssistantResponse(
