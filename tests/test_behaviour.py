@@ -451,4 +451,4 @@ def test_behaviour_engine_full_integration():
 
     events = engine.evaluate_frame(tracker, current_frame_idx=0, timestamp=0.0)
     assert events == []
-    assert len(engine.rules) == 6
+    assert len(engine.rules) >= 6

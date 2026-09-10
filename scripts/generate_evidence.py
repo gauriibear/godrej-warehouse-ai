@@ -126,6 +126,9 @@ def generate_synthetic_evidence(
             4: (400, 260, 510, 370),
             5: (420, 240, 530, 350),
             7: (min(750, 480 + f * 4), 450, min(860, 590 + f * 4), 550),
+            8: (880, 480, 990, 580),
+            9: (600, 420, 710, 520),
+            10: (320, 380, 430, 490),
         }
         frame_img = create_synthetic_cctv_frame(f, total_frames=total_sequence_frames, box_positions=boxes)
         evidence_collector.add_frame(f, frame_img)
@@ -241,6 +244,82 @@ def generate_synthetic_evidence(
             confidence=0.86,
             bbox=(640, 440, 750, 550),
             metrics={"vertical_velocity_px_s": 420.0, "drop_height_px": 95.0},
+        ),
+        # 8. Product Outside Designated Area -> HIGH risk (distance 110px >= 80px, prolonged 28f >= 25f)
+        BehaviourEvent(
+            event_id="EVT-OUTSIDE-8-F72",
+            rule_name="product_outside_designated_area",
+            track_id=8,
+            display_label="Carton #8",
+            class_name="carton",
+            frame_idx=72,
+            timestamp_seconds=round(72 / fps, 2),
+            confidence=0.88,
+            bbox=(880, 480, 990, 580),
+            metrics={
+                "consecutive_outside_frames": 28,
+                "distance_outside_px": 110.0,
+                "designated_zone": [100, 150, 800, 650],
+            },
+        ),
+        # 9. Product Handled Without Required Equipment -> HIGH risk (prolonged 26f >= 25f)
+        BehaviourEvent(
+            event_id="EVT-NOEQUIP-9-15-F65",
+            rule_name="product_handled_without_required_equipment",
+            track_id=9,
+            display_label="Carton #9",
+            secondary_track_id=15,
+            secondary_label="Person #15",
+            class_name="carton",
+            frame_idx=65,
+            timestamp_seconds=round(65 / fps, 2),
+            confidence=0.89,
+            bbox=(600, 420, 710, 520),
+            metrics={
+                "consecutive_handling_frames": 26,
+                "worker_distance_px": 45.0,
+                "required_equipment": ["equipment/forklift", "forklift", "equipment/machinery", "trolley", "pallet_jack"],
+                "equipment_present": False,
+                "explanation": (
+                    "Product being handled manually by Person #15 for 26 consecutive frames "
+                    "without required equipment (equipment/forklift, forklift, equipment/machinery, trolley, pallet_jack)."
+                ),
+            },
+        ),
+        # 10. Unsafe Loading/Unloading Sequence -> HIGH risk (rapid execution 12f <= 15f)
+        BehaviourEvent(
+            event_id="EVT-UNSAFESEQ-10-F82",
+            rule_name="unsafe_loading_unloading_sequence",
+            track_id=10,
+            display_label="Carton #10",
+            secondary_track_id=18,
+            secondary_label="Person #18",
+            class_name="carton",
+            frame_idx=82,
+            timestamp_seconds=round(82 / fps, 2),
+            confidence=0.88,
+            bbox=(320, 380, 430, 490),
+            metrics={
+                "sequence_duration_frames": 12,
+                "sequence_steps": [
+                    "approach_loading_zone",
+                    "abrupt_handling_without_stabilization",
+                ],
+                "skipped_step": "stabilized_positioning",
+                "action_speed_px_s": 220.0,
+                "action_type": "abrupt_release_or_movement",
+                "max_stable_frames_observed": 1,
+                "required_stable_frames": 5,
+                "window_frames": 45,
+                "explanation": (
+                    "An unsafe loading/unloading sequence was detected because the "
+                    "material handling action occurred before the required safe positioning step."
+                ),
+                "recommendation": (
+                    "Follow the prescribed loading/unloading sequence and ensure the "
+                    "product is safely positioned before continuing the next handling step."
+                ),
+            },
         ),
     ]
 

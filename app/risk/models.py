@@ -66,7 +66,10 @@ class RiskConfig:
             "product_dragged": 45.0,
             "product_rolled": 50.0,
             "pallet_overhang": 55.0,
+            "product_outside_designated_area": 55.0,
+            "product_handled_without_required_equipment": 58.0,
             "product_pushed": 60.0,
+            "unsafe_loading_unloading_sequence": 66.0,
             "unstable_stacking": 72.0,
             "product_dropped": 75.0,
             "product_thrown": 80.0,
@@ -95,6 +98,19 @@ class RiskConfig:
 
     overhang_critical_ratio: float = 0.25
     overhang_critical_penalty: float = 15.0
+
+    outside_area_prolonged_frames: int = 25
+    outside_area_prolonged_penalty: float = 12.0
+    outside_area_high_distance_px: float = 80.0
+    outside_area_high_distance_penalty: float = 10.0
+
+    equipment_prolonged_frames: int = 25
+    equipment_prolonged_penalty: float = 12.0
+
+    sequence_rapid_frames: int = 15
+    sequence_rapid_penalty: float = 10.0
+    sequence_high_action_speed_px_s: float = 240.0
+    sequence_high_action_speed_penalty: float = 8.0
 
     roll_high_flips: int = 4
     roll_high_flips_penalty: float = 8.0
@@ -133,6 +149,18 @@ class RiskConfig:
             "pallet_overhang": (
                 "Reposition carton flush within pallet perimeter edges; eliminate overhang exceeding 5% "
                 "to prevent forklift shearing and rack snagging."
+            ),
+            "product_outside_designated_area": (
+                "Reposition the product within the designated storage/pallet/loading area before further handling; "
+                "verify floor demarcation markings and ensure main warehouse transit aisles remain unobstructed."
+            ),
+            "product_handled_without_required_equipment": (
+                "Use the required handling equipment for this product before continuing the handling operation; "
+                "inspect load weight and utilize designated mechanical lifting aids."
+            ),
+            "unsafe_loading_unloading_sequence": (
+                "Follow the prescribed loading/unloading sequence and ensure the "
+                "product is safely positioned before continuing the next handling step."
             ),
         }
     )

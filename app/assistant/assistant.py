@@ -32,6 +32,8 @@ class QueryIntent(str, Enum):
     RECOMMENDATIONS = "RECOMMENDATIONS"
     FILTER_RULES = "FILTER_RULES"
     FILTER_RISK = "FILTER_RISK"
+    BEHAVIOUR_FREQUENCY = "BEHAVIOUR_FREQUENCY"
+    FREQUENCY = "BEHAVIOUR_FREQUENCY"
     FALLBACK = "FALLBACK"
 
 
@@ -115,6 +117,9 @@ class OperationsAssistant:
         "product_rolled": ["roll", "rolled", "rolling", "tumble", "tumbling"],
         "unstable_stacking": ["stack", "stacking", "stacked", "column", "lean", "leaning", "unstable"],
         "pallet_overhang": ["overhang", "pallet", "protrusion", "protrude", "perimeter"],
+        "product_outside_designated_area": ["outside", "designated area", "unauthorized zone", "placement", "storage area", "permitted area", "boundary", "demarcation"],
+        "product_handled_without_required_equipment": ["equipment", "required equipment", "forklift", "pallet jack", "trolley", "manual handling", "unassisted", "machinery", "mechanical aid"],
+        "unsafe_loading_unloading_sequence": ["sequence", "loading sequence", "unloading sequence", "unsafe sequence", "out of order", "out of sequence", "loading", "unloading", "positioning step"],
     }
 
     def __init__(
@@ -218,7 +223,38 @@ class OperationsAssistant:
         Primary interface for operator queries.
         Parses intent, extracts entities, and returns a grounded response.
         """
+        q_clean = query.strip()
+        q_lower = q_clean.lower()
+
+        # Check for Behaviour Frequency / Trend query patterns
+        freq_keywords = [
+            "most frequent", "most frequently", "frequently",
+            "most common", "common violation", "common behaviour", "common behavior",
+            "happens the most", "happens most", "occurs the most", "occurs most",
+            "occur most", "occurs most often", "occur most often", "happens most often", "happening most often",
+            "behaviour frequency", "behavior frequency", "violation frequency", "incident frequency",
+            "frequency of", "frequency list", "show frequency", "show behaviour frequency", "show behavior frequency",
+            "recurring most often", "recurs most often", "recurrent most often", "recurring most",
+            "which behaviour occurs", "which behavior occurs", "which violation occurs",
+            "which handling behaviour happens", "which handling behavior happens",
+        ]
+        freq_patterns = [
+            r"\bmost\s+frequent(?:ly)?\b",
+            r"\bmost\s+common\b",
+            r"\b(?:happens?|occurred?|occurs?)\s+(?:the\s+)?most\b",
+            r"\b(?:occur|occurs|happens?|recurring|recurs?)\s+most\s+often\b",
+            r"\b(?:behaviour|behavior|violation|incident|handling)\s+frequency\b",
+            r"\bfrequency\s+(?:of|analysis|breakdown|list)\b",
+            r"\bwhich\s+(?:behaviour|behavior|violation|handling)\b.*\b(?:often|common|frequent|most)\b",
+        ]
+        is_frequency_query = (
+            any(k in q_lower for k in freq_keywords) or
+            any(re.search(pat, q_lower) for pat in freq_patterns)
+        )
+
         if not self.incidents:
+            if is_frequency_query:
+                return self.get_behaviour_frequency()
             return AssistantResponse(
                 answer=(
                     "⚠️ **No incident records are currently loaded in the system.**\n\n"
@@ -231,16 +267,17 @@ class OperationsAssistant:
                 data={"total_incidents": 0},
             )
 
-        q_clean = query.strip()
-        q_lower = q_clean.lower()
-
         # 1. Check for specific Incident ID query (e.g. INC-DROP-1-F32)
         match_inc = re.search(r"\b(inc-[a-z0-9\-]+)\b", q_lower)
         if match_inc:
             target_id = match_inc.group(1)
             return self.get_incident_diagnosis(target_id)
 
-        # 2. Check for Repeat Violation / Tracked Object History query
+        # 2. Check for Behaviour Frequency / Trend query
+        if is_frequency_query:
+            return self.get_behaviour_frequency()
+
+        # 3. Check for Repeat Violation / Tracked Object History query
         repeat_keywords = ["repeat", "chronic", "multiple times", "again", "recurring", "multiple infractions"]
         is_repeat_query = any(k in q_lower for k in repeat_keywords)
 
@@ -362,6 +399,96 @@ class OperationsAssistant:
                 "medium": med,
                 "low": low,
                 "rule_counts": rule_counts,
+            },
+        )
+
+    @staticmethod
+    def _short_behaviour_keyword(disp_name: str) -> str:
+        """Converts human readable behaviour title into conversational gerund/noun phrase."""
+        mapping = {
+            "Product Dragged": "dragging",
+            "Product Dropped": "dropping",
+            "Product Thrown": "throwing",
+            "Product Pushed": "pushing/kicking",
+            "Product Rolled": "rolling",
+            "Unstable Stacking": "unstable stacking",
+            "Pallet Overhang": "pallet overhang",
+            "Product Outside Designated Area": "placement outside designated areas",
+            "Product Handled Without Required Equipment": "handling without required equipment",
+            "Unsafe Loading Unloading Sequence": "unsafe loading/unloading sequences",
+        }
+        return mapping.get(disp_name, disp_name.lower())
+
+    def get_behaviour_frequency(self) -> AssistantResponse:
+        """
+        Analyzes and ranks observed warehouse behaviours by frequency of occurrence.
+        Identifies the most common handling violation and provides grounded trend breakdown.
+        """
+        if not self.incidents:
+            return AssistantResponse(
+                answer="No recorded behaviour incidents are available for frequency analysis.",
+                intent=QueryIntent.BEHAVIOUR_FREQUENCY,
+                matched_incidents=[],
+                data={"total_incidents": 0, "frequency_ranking": []},
+            )
+
+        total_incidents = len(self.incidents)
+
+        # Count incidents by behaviour
+        behaviour_counts: Dict[str, int] = {}
+        for inc in self.incidents:
+            name = inc.human_readable_name or inc.rule_name.replace("_", " ").title()
+            behaviour_counts[name] = behaviour_counts.get(name, 0) + 1
+
+        # Sort behaviours by count descending, tie-breaking deterministically by name ascending
+        sorted_behaviours = sorted(
+            behaviour_counts.items(),
+            key=lambda x: (-x[1], x[0]),
+        )
+
+        top_name, top_count = sorted_behaviours[0]
+        tied_top = [name for name, count in sorted_behaviours if count == top_count]
+
+        if len(tied_top) == 1:
+            headline = f"{top_name} is the most frequently recorded behaviour with {top_count} incident{'s' if top_count != 1 else ''}."
+            action_str = self._short_behaviour_keyword(top_name)
+            interpretation = f"This indicates that {action_str} is the most recurring observed handling issue in the current video/session."
+        else:
+            tied_str = " and ".join(tied_top) if len(tied_top) == 2 else (", ".join(tied_top[:-1]) + f", and {tied_top[-1]}")
+            headline = f"{tied_str} are the most frequently recorded behaviours with {top_count} incident{'s' if top_count != 1 else ''} each."
+            actions = [self._short_behaviour_keyword(name) for name in tied_top]
+            actions_str = " and ".join(actions) if len(actions) == 2 else (", ".join(actions[:-1]) + f", and {actions[-1]}")
+            interpretation = f"This indicates that {actions_str} are the most recurring observed handling issues in the current video/session."
+
+        freq_lines = []
+        ranking_data = []
+        for rank_idx, (name, count) in enumerate(sorted_behaviours, start=1):
+            freq_lines.append(f"{rank_idx}. {name} — {count}")
+            ranking_data.append({
+                "rank": rank_idx,
+                "behaviour": name,
+                "count": count,
+                "percentage": round((count / total_incidents) * 100.0, 1),
+            })
+
+        answer = (
+            f"{headline}\n\n"
+            f"Behaviour frequency:\n"
+            + "\n".join(freq_lines) + "\n\n"
+            f"Total incidents analyzed: {total_incidents}.\n\n"
+            f"{interpretation}\n\n"
+            f"{self.POLICY_DISCLAIMER}"
+        )
+
+        return AssistantResponse(
+            answer=answer,
+            intent=QueryIntent.BEHAVIOUR_FREQUENCY,
+            matched_incidents=self.incidents,
+            data={
+                "total_incidents": total_incidents,
+                "most_frequent_behaviour": top_name if len(tied_top) == 1 else tied_top,
+                "highest_count": top_count,
+                "frequency_ranking": ranking_data,
             },
         )
 
@@ -679,6 +806,7 @@ class OperationsAssistant:
             f"- 🔍 **Diagnosis**: *\"Why was {sample_id} classified as critical?\"* or *\"Explain {sample_id}\"*\n"
             "- 🔁 **Repeat Infractions**: *\"What happened to Carton #7?\"* or *\"Show repeat violations\"*\n"
             "- 🛡️ **Prevention**: *\"What prevention recommendations apply?\"* or *\"How do we prevent drops?\"*\n"
+            "- 📈 **Frequency & Trends**: *\"Which behaviour occurs most frequently?\"* or *\"What is the most common violation?\"*\n"
             "- 🎯 **Filter**: *\"Show all dragged cartons\"* or *\"List high risk incidents\"*\n\n"
             f"{self.POLICY_DISCLAIMER}"
         )

@@ -60,6 +60,42 @@ class BehaviourConfig:
     stacking_min_duration_frames: int = 10             # Stationary frames required before flagging unstable stack
     pallet_overhang_max_ratio: float = 0.15            # Max allowed overhang width percentage outside pallet boundary
 
+    # Product Outside Designated Area heuristics (Scenario #8)
+    designated_zones: List[Tuple[int, int, int, int]] = field(
+        default_factory=lambda: [(100, 150, 1180, 650)]
+    )                                                  # Permitted storage/pallet/loading zone(s) (x1, y1, x2, y2)
+    outside_area_min_duration_frames: int = 10         # Consecutive frames outside zone before violation triggers
+    outside_area_margin_px: float = 20.0               # Boundary tolerance margin (px) to prevent edge jitter false alarms
+    outside_area_prolonged_frames: int = 25            # Sustained duration threshold for risk escalation
+    outside_area_high_distance_px: float = 80.0        # Pixel displacement threshold for severe pathway obstruction risk
+
+    # Product Handled Without Required Equipment heuristics (Scenario #9)
+    required_equipment_types: List[str] = field(
+        default_factory=lambda: [
+            "equipment/forklift",
+            "forklift",
+            "equipment/machinery",
+            "trolley",
+            "pallet_jack",
+        ]
+    )                                                  # Equipment classes that must be present during handling
+    equipment_worker_handling_distance_px: float = 120.0  # Max distance between worker and carton for active handling
+    equipment_presence_distance_px: float = 250.0         # Max proximity for equipment to be considered assisting
+    equipment_min_duration_frames: int = 10               # Consecutive frames of manual unassisted handling
+    equipment_prolonged_frames: int = 25                  # Frames of sustained unassisted handling for risk escalation
+
+    # Unsafe Loading/Unloading Sequence heuristics (Scenario #10)
+    loading_zones: List[Tuple[int, int, int, int]] = field(
+        default_factory=lambda: [(100, 150, 1180, 650)]
+    )                                                  # Permitted loading/unloading area(s)
+    sequence_max_window_frames: int = 45               # Maximum frame window to evaluate the sequence
+    sequence_min_approach_frames: int = 4              # Minimum motion frames required to establish approach phase
+    sequence_approach_speed_px_s: float = 60.0         # Minimum velocity (px/s) for approach into loading zone
+    sequence_min_stabilize_frames: int = 5             # Consecutive frames required for safe stabilization
+    sequence_stabilize_max_speed_px_s: float = 35.0    # Maximum speed to qualify as stabilized positioning
+    sequence_unsafe_action_speed_px_s: float = 180.0   # Velocity threshold indicating an abrupt action / release
+    sequence_rapid_execution_frames: int = 15          # Fast out-of-order execution threshold for risk escalation
+
 
 # ───────────────────────────── Behaviour Event ──────────────────────────────
 
@@ -200,6 +236,9 @@ class BehaviourEngine:
             from app.behaviour.push import PushRule
             from app.behaviour.roll import RollRule
             from app.behaviour.stacking import StackingRule
+            from app.behaviour.outside_area import OutsideDesignatedAreaRule
+            from app.behaviour.equipment import NoRequiredEquipmentRule
+            from app.behaviour.sequence import UnsafeLoadingSequenceRule
 
             self.rules = [
                 DropRule(),
@@ -208,6 +247,9 @@ class BehaviourEngine:
                 PushRule(),
                 RollRule(),
                 StackingRule(),
+                OutsideDesignatedAreaRule(),
+                NoRequiredEquipmentRule(),
+                UnsafeLoadingSequenceRule(),
             ]
         except ImportError:
             # Rules will be populated as they are defined
@@ -346,6 +388,12 @@ class BehaviourEngine:
                 metric_text = f"Offset: {ev.metrics['offset_ratio'] * 100:.0f}%"
             elif "overhang_ratio" in ev.metrics:
                 metric_text = f"Overhang: {ev.metrics['overhang_ratio'] * 100:.0f}%"
+            elif "distance_outside_px" in ev.metrics:
+                metric_text = f"Outside: {ev.metrics['distance_outside_px']:.0f} px"
+            elif "consecutive_handling_frames" in ev.metrics:
+                metric_text = f"NoEquip: {ev.metrics['consecutive_handling_frames']}f"
+            elif "sequence_duration_frames" in ev.metrics:
+                metric_text = f"UnsafeSeq: {ev.metrics['sequence_duration_frames']}f"
 
             if metric_text:
                 tag_y = min(h - 5, y2 + 18)

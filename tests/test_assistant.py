@@ -173,3 +173,129 @@ def test_godrej_damage_policy_compliance(assistant):
         assert "Potential Damage Risk" in res.answer
         # Must NEVER state that damage was confirmed
         assert "confirmed physical damage" not in res.answer.lower() or "is not confirmed" in res.answer.lower()
+
+
+def test_query_behaviour_frequency_intent_classification(assistant):
+    """
+    Verifies that all specified frequency and trend query phrasings
+    are accurately routed to QueryIntent.BEHAVIOUR_FREQUENCY.
+    """
+    queries = [
+        "Which behaviour occurs most frequently?",
+        "What is the most common violation?",
+        "Which handling behaviour happens the most?",
+        "Show behaviour frequency",
+        "What behaviour is recurring most often?",
+        "Which violation occurs most often?",
+    ]
+    for q in queries:
+        res = assistant.ask(q)
+        assert res.intent == QueryIntent.BEHAVIOUR_FREQUENCY, f"Failed for query: '{q}', got {res.intent}"
+        assert "Behaviour frequency:" in res.answer
+        assert "Total incidents analyzed:" in res.answer
+        assert res.data["total_incidents"] > 0
+        assert len(res.data["frequency_ranking"]) > 0
+
+
+def test_query_behaviour_frequency_counts_and_ranking(assistant, sample_incidents):
+    """
+    Verifies that behaviour frequency counts match actual incident data,
+    the top behaviour is correctly identified, and the operational interpretation is present.
+    """
+    res = assistant.ask("Which behaviour occurs most frequently?")
+    assert res.intent == QueryIntent.BEHAVIOUR_FREQUENCY
+
+    # Manually compute expected counts from sample_incidents
+    expected_counts = {}
+    for inc in sample_incidents:
+        name = inc.human_readable_name
+        expected_counts[name] = expected_counts.get(name, 0) + 1
+
+    assert res.data["total_incidents"] == len(sample_incidents)
+    ranking = res.data["frequency_ranking"]
+
+    # Verify counts in ranking match expected
+    for item in ranking:
+        name = item["behaviour"]
+        assert item["count"] == expected_counts[name]
+
+    # Verify ranks are ordered descending by count
+    counts = [item["count"] for item in ranking]
+    assert counts == sorted(counts, reverse=True)
+
+    # Verify top behaviour and interpretation
+    top_behaviour = ranking[0]["behaviour"]
+    top_count = ranking[0]["count"]
+    assert top_count == res.data["highest_count"]
+    assert top_behaviour in res.answer
+    assert f"with {top_count} incident" in res.answer
+    assert "most recurring observed handling issue" in res.answer
+
+
+def test_query_behaviour_frequency_deterministic_ties():
+    """
+    Verifies that behaviour frequency handles ties deterministically
+    by sorting alphabetically by behaviour name.
+    """
+    from app.risk.models import IncidentRecord, RiskLevel, DamageAssessmentStatus
+
+    incidents = [
+        IncidentRecord(
+            incident_id="INC-1",
+            event_id="EVT-1",
+            rule_name="product_dropped",
+            human_readable_name="Product Dropped",
+            track_id=1,
+            display_label="Carton #1",
+            frame_idx=10,
+            timestamp_seconds=1.0,
+            risk_level=RiskLevel.HIGH,
+            risk_score=75.0,
+            confidence=0.9,
+            damage_assessment=DamageAssessmentStatus.POTENTIAL_DAMAGE_RISK,
+            explanation="Drop test",
+            recommendation="Handle carefully",
+            metrics={},
+        ),
+        IncidentRecord(
+            incident_id="INC-2",
+            event_id="EVT-2",
+            rule_name="product_dragged",
+            human_readable_name="Product Dragged",
+            track_id=2,
+            display_label="Carton #2",
+            frame_idx=20,
+            timestamp_seconds=2.0,
+            risk_level=RiskLevel.MEDIUM,
+            risk_score=45.0,
+            confidence=0.85,
+            damage_assessment=DamageAssessmentStatus.POTENTIAL_DAMAGE_RISK,
+            explanation="Drag test",
+            recommendation="Lift carton",
+            metrics={},
+        ),
+    ]
+
+    asst = OperationsAssistant.from_incidents(incidents)
+    res = asst.ask("Which behaviour occurs most frequently?")
+
+    assert res.intent == QueryIntent.BEHAVIOUR_FREQUENCY
+    assert res.data["total_incidents"] == 2
+    assert res.data["highest_count"] == 1
+
+    ranking = res.data["frequency_ranking"]
+    assert len(ranking) == 2
+    # Both have count 1, so tie-break alphabetically: "Product Dragged" < "Product Dropped"
+    assert ranking[0]["behaviour"] == "Product Dragged"
+    assert ranking[1]["behaviour"] == "Product Dropped"
+    assert "are the most frequently recorded behaviours with 1 incident each" in res.answer
+
+
+def test_query_behaviour_frequency_empty_incidents():
+    """Verifies that an empty assistant returns the required clear message."""
+    empty_asst = OperationsAssistant(incidents=[])
+    res = empty_asst.ask("Which behaviour occurs most frequently?")
+    assert res.intent == QueryIntent.BEHAVIOUR_FREQUENCY
+    assert res.answer == "No recorded behaviour incidents are available for frequency analysis."
+    assert res.data["total_incidents"] == 0
+    assert res.data["frequency_ranking"] == []

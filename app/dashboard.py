@@ -487,6 +487,11 @@ if video_path_to_process:
                     f"Risk Incidents: {incident_total}"
                 )
 
+                # Finalize video clips with buffered post-event frames
+                if evidence_collector is not None and risk_engine is not None:
+                    for inc in risk_engine.all_incidents:
+                        evidence_collector.extract_clip(inc, fps=meta.fps)
+
                 # Store tracker, behaviour engine, and risk engine in session state
                 st.session_state["tracker_result"] = tracker
                 st.session_state["behaviour_engine"] = behaviour_engine
@@ -661,9 +666,17 @@ if video_path_to_process:
                         else:
                             st.warning("Keyframe image not available.")
 
-                        if selected_inc.video_clip_path and Path(selected_inc.video_clip_path).exists():
-                            st.markdown("#### Video Clip Snippet")
-                            st.video(selected_inc.video_clip_path)
+                        st.markdown("#### Video Clip Snippet")
+                        clip_p = Path(selected_inc.video_clip_path) if selected_inc.video_clip_path else None
+                        if clip_p and clip_p.exists() and clip_p.stat().st_size > 0:
+                            try:
+                                with open(clip_p, "rb") as vf:
+                                    video_bytes = vf.read()
+                                st.video(video_bytes, format="video/mp4")
+                            except Exception as e:
+                                st.warning(f"Video clip replay unavailable: {e}")
+                        else:
+                            st.info("ℹ️ Video clip replay unavailable for this incident.")
 
                     with col_ev2:
                         st.markdown("#### Risk Assessment Profile")
@@ -768,7 +781,7 @@ if video_path_to_process:
                 kpi_c5.metric("Low Risk", q_low)
 
                 st.markdown("#### ⚡ Quick Actions")
-                btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+                btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
 
                 selected_quick_prompt = None
                 with btn_c1:
@@ -778,9 +791,12 @@ if video_path_to_process:
                     if st.button("🚨 Top Highest Risks", key="btn_highest", use_container_width=True):
                         selected_quick_prompt = "What are the highest-risk incidents?"
                 with btn_c3:
+                    if st.button("📈 Behaviour Frequency", key="btn_frequency", use_container_width=True):
+                        selected_quick_prompt = "Which behaviour occurs most frequently?"
+                with btn_c4:
                     if st.button("🔁 Repeat Infractions", key="btn_repeat", use_container_width=True):
                         selected_quick_prompt = "Show repeat violations across all entities"
-                with btn_c4:
+                with btn_c5:
                     if st.button("🛡️ Prevention Guide", key="btn_prevention", use_container_width=True):
                         selected_quick_prompt = "What prevention recommendations apply?"
 
@@ -789,7 +805,7 @@ if video_path_to_process:
                     st.session_state["assistant_chat_history"] = []
 
                 # Handle quick prompt or chat input
-                user_query = st.chat_input("Ask about incident causes, highest risks, Carton #7 history, or prevention...")
+                user_query = st.chat_input("Ask about incident causes, behaviour frequency, highest risks, Carton #7 history, or prevention...")
                 active_query = user_query or selected_quick_prompt
 
                 if active_query:

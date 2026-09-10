@@ -136,6 +136,47 @@ class RiskEngine:
                     f"+{self.config.roll_high_flips_penalty:.0f} pts)."
                 )
 
+        elif event.rule_name == "product_outside_designated_area":
+            dur = metrics.get("consecutive_outside_frames", 0)
+            dist = metrics.get("distance_outside_px", 0.0)
+            if dur >= self.config.outside_area_prolonged_frames:
+                score += self.config.outside_area_prolonged_penalty
+                reason_components.append(
+                    f"Prolonged positioning outside designated zone ({dur} frames >= {self.config.outside_area_prolonged_frames}: "
+                    f"+{self.config.outside_area_prolonged_penalty:.0f} pts)."
+                )
+            if dist >= self.config.outside_area_high_distance_px:
+                score += self.config.outside_area_high_distance_penalty
+                reason_components.append(
+                    f"Substantial displacement outside authorized perimeter ({dist:.0f} px >= {self.config.outside_area_high_distance_px:.0f} px: "
+                    f"+{self.config.outside_area_high_distance_penalty:.0f} pts, transit obstruction risk)."
+                )
+
+        elif event.rule_name == "product_handled_without_required_equipment":
+            dur = metrics.get("consecutive_handling_frames", 0)
+            if dur >= self.config.equipment_prolonged_frames:
+                score += self.config.equipment_prolonged_penalty
+                reason_components.append(
+                    f"Prolonged manual handling without required equipment ({dur} frames >= {self.config.equipment_prolonged_frames}: "
+                    f"+{self.config.equipment_prolonged_penalty:.0f} pts, increased risk of drops/sprains)."
+                )
+
+        elif event.rule_name == "unsafe_loading_unloading_sequence":
+            seq_dur = metrics.get("sequence_duration_frames", 0)
+            act_spd = metrics.get("action_speed_px_s", 0.0)
+            if seq_dur <= self.config.sequence_rapid_frames:
+                score += self.config.sequence_rapid_penalty
+                reason_components.append(
+                    f"Rapid out-of-order execution ({seq_dur} frames <= {self.config.sequence_rapid_frames}: "
+                    f"+{self.config.sequence_rapid_penalty:.0f} pts, severe procedural violation)."
+                )
+            if act_spd >= self.config.sequence_high_action_speed_px_s:
+                score += self.config.sequence_high_action_speed_penalty
+                reason_components.append(
+                    f"High-velocity abrupt action during sequence ({act_spd:.0f} px/s >= {self.config.sequence_high_action_speed_px_s:.0f} px/s: "
+                    f"+{self.config.sequence_high_action_speed_penalty:.0f} pts, impact hazard)."
+                )
+
         # 3. Repeated violation penalty on the same entity
         prior_count = self.track_incident_counts.get(event.track_id, 0)
         if prior_count == 1:

@@ -117,6 +117,12 @@ class EvidenceCollector:
                     tag_text += f" | Offset: {incident.metrics['offset_ratio']*100:.0f}%"
                 elif "overhang_ratio" in incident.metrics:
                     tag_text += f" | Overhang: {incident.metrics['overhang_ratio']*100:.0f}%"
+                elif "distance_outside_px" in incident.metrics:
+                    tag_text += f" | Outside: {incident.metrics['distance_outside_px']:.0f} px"
+                elif "consecutive_handling_frames" in incident.metrics:
+                    tag_text += f" | NoEquip: {incident.metrics['consecutive_handling_frames']}f"
+                elif "sequence_duration_frames" in incident.metrics:
+                    tag_text += f" | UnsafeSeq: {incident.metrics['sequence_duration_frames']}f"
 
                 tag_y = min(h - 5, y2 + 20)
                 cv2.rectangle(annotated, (x1, y2), (x1 + 180, tag_y + 4), color_bgr, -1)
@@ -138,6 +144,75 @@ class EvidenceCollector:
         incident.evidence_image_path = str(out_path)
         return str(out_path)
 
+    @staticmethod
+    def _write_video_clip(out_path: Path, frames: List[np.ndarray], fps: float = 30.0) -> bool:
+        """
+        Writes video frames to an MP4 clip using H.264 encoding with yuv420p pixel format
+        for universal HTML5 browser playback. Falls back to cv2.VideoWriter if PyAV fails.
+        """
+        if not frames:
+            return False
+
+        h, w = frames[0].shape[:2]
+        # H.264 encoding requires even dimensions
+        if w % 2 != 0 or h % 2 != 0:
+            w = w - (w % 2)
+            h = h - (h % 2)
+            frames = [f[:h, :w] for f in frames]
+
+        fps_val = max(1.0, float(fps))
+
+        # 1. Primary: PyAV (libx264, yuv420p) - HTML5 browser compatible
+        try:
+            import av
+
+            container = av.open(str(out_path), mode="w", format="mp4")
+            stream = container.add_stream("h264", rate=max(1, int(round(fps_val))))
+            stream.width = w
+            stream.height = h
+            stream.pix_fmt = "yuv420p"
+            stream.options = {"preset": "veryfast", "crf": "23"}
+
+            for f in frames:
+                frame_av = av.VideoFrame.from_ndarray(f, format="bgr24")
+                for packet in stream.encode(frame_av):
+                    container.mux(packet)
+
+            for packet in stream.encode():
+                container.mux(packet)
+
+            container.close()
+
+            if out_path.exists() and out_path.stat().st_size > 0:
+                return True
+        except Exception:
+            pass
+
+        # 2. Fallback: cv2.VideoWriter
+        try:
+            writer = None
+            for codec in ["avc1", "H264", "mp4v"]:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    w_cand = cv2.VideoWriter(str(out_path), fourcc, fps_val, (w, h))
+                    if w_cand.isOpened():
+                        writer = w_cand
+                        break
+                except Exception:
+                    continue
+
+            if writer is None or not writer.isOpened():
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(str(out_path), fourcc, fps_val, (w, h))
+
+            for f in frames:
+                writer.write(f)
+            writer.release()
+
+            return out_path.exists() and out_path.stat().st_size > 0
+        except Exception:
+            return False
+
     def extract_clip(
         self,
         incident: IncidentRecord,
@@ -145,6 +220,7 @@ class EvidenceCollector:
     ) -> Optional[str]:
         """
         Extracts a before/after video clip for the incident from the rolling frame buffer.
+        Encodes in H.264 (yuv420p) for seamless HTML5 browser playback.
         Returns the saved video clip filepath if sufficient frames exist.
         """
         if not self._frame_buffer:
@@ -167,16 +243,12 @@ class EvidenceCollector:
         out_filename = f"{incident.incident_id}.mp4"
         out_path = self.output_dir / out_filename
 
-        h, w = clip_frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(out_path), fourcc, max(1.0, float(fps)), (w, h))
+        success = self._write_video_clip(out_path, clip_frames, fps=fps)
+        if success and out_path.exists() and out_path.stat().st_size > 0:
+            incident.video_clip_path = str(out_path)
+            return str(out_path)
 
-        for f in clip_frames:
-            writer.write(f)
-        writer.release()
-
-        incident.video_clip_path = str(out_path)
-        return str(out_path)
+        return None
 
     def save_manifest(self, incidents: List[IncidentRecord]) -> str:
         """
