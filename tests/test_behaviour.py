@@ -397,6 +397,73 @@ def test_pallet_overhang_detected():
     assert overhang_events[0].metrics["overhang_ratio"] >= config.pallet_overhang_max_ratio
 
 
+def test_drag_rule_detects_realistic_carton_drag_with_sustained_lateral_motion():
+    """A large carton dragged across the floor for several frames should trigger Product Dragged."""
+    rule = DragRule()
+    config = BehaviourConfig()
+
+    points = []
+    for i in range(10):
+        t = i * 0.033
+        x = 120 + i * 18
+        y = 420 + (i % 2) * 2
+        points.append(make_track_point(i, t, 30, "carton", (x, y, x + 90, y + 90)))
+
+    carton = make_tracked_object(30, "carton", points)
+    worker_pts = [
+        make_track_point(9, 0.297, 31, "person", (90, 300, 220, 500)),
+    ]
+    worker = make_tracked_object(31, "person", worker_pts)
+    tracked_objects = {30: carton, 31: worker}
+
+    events = rule.evaluate(
+        tracked_objects=tracked_objects,
+        active_track_ids=[30, 31],
+        current_frame_idx=9,
+        timestamp=0.297,
+        video_fps=30.0,
+        config=config,
+    )
+
+    drag_events = [e for e in events if e.rule_name == "product_dragged"]
+    assert len(drag_events) == 1
+    assert drag_events[0].track_id == 30
+    assert drag_events[0].metrics["evidence_score"] >= 0.55
+
+
+def test_throw_rule_detects_realistic_release_and_rapid_forward_motion():
+    """A product with sudden forward motion after release should trigger Product Thrown."""
+    rule = ThrowRule()
+    config = BehaviourConfig()
+
+    points = [
+        make_track_point(0, 0.0, 40, "carton", (200, 420, 290, 500)),
+        make_track_point(1, 0.033, 40, "carton", (220, 410, 310, 490)),
+        make_track_point(2, 0.067, 40, "carton", (255, 395, 345, 480)),
+        make_track_point(3, 0.100, 40, "carton", (305, 380, 395, 470)),
+        make_track_point(4, 0.133, 40, "carton", (355, 390, 445, 480)),
+    ]
+    carton = make_tracked_object(40, "carton", points)
+    worker = make_tracked_object(41, "person", [
+        make_track_point(4, 0.133, 41, "person", (100, 250, 220, 470)),
+    ])
+    tracked_objects = {40: carton, 41: worker}
+
+    events = rule.evaluate(
+        tracked_objects=tracked_objects,
+        active_track_ids=[40, 41],
+        current_frame_idx=4,
+        timestamp=0.133,
+        video_fps=30.0,
+        config=config,
+    )
+
+    throw_events = [e for e in events if e.rule_name == "product_thrown"]
+    assert len(throw_events) == 1
+    assert throw_events[0].track_id == 40
+    assert throw_events[0].metrics["evidence_score"] >= 0.65
+
+
 # ─────────────────────── 7. Engine Deduplication Tests ──────────────────────
 
 def test_engine_event_cooldown_deduplication():

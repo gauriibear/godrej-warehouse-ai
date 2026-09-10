@@ -59,16 +59,16 @@ def test_equipment_present_suppresses_violation():
     )
     config = BehaviourConfig()
 
-    # Carton at (400, 400, 500, 500)
+    # Carton moves slightly as a worker manually handles it without required equipment.
     carton_points = [
-        make_track_point(f, f * 0.033, 1, "carton", (400, 400, 500, 500))
+        make_track_point(f, f * 0.033, 1, "carton", (400 + f * 2, 400, 500 + f * 2, 500))
         for f in range(15)
     ]
     carton = make_tracked_object(1, "carton", carton_points)
 
-    # Worker at (360, 400, 440, 520) - close proximity (handling)
+    # Worker stays adjacent while moving with the carton.
     worker_points = [
-        make_track_point(f, f * 0.033, 2, "person", (360, 400, 440, 520))
+        make_track_point(f, f * 0.033, 2, "person", (360 + f * 2, 400, 440 + f * 2, 520))
         for f in range(15)
     ]
     worker = make_tracked_object(2, "person", worker_points)
@@ -105,13 +105,13 @@ def test_manual_handling_without_equipment_triggers_event():
     config = BehaviourConfig()
 
     carton_points = [
-        make_track_point(f, f * 0.033, 1, "carton", (400, 400, 500, 500))
+        make_track_point(f, f * 0.033, 1, "carton", (400 + f * 12, 400, 500 + f * 12, 500))
         for f in range(15)
     ]
     carton = make_tracked_object(1, "carton", carton_points)
 
     worker_points = [
-        make_track_point(f, f * 0.033, 2, "person", (360, 400, 440, 520))
+        make_track_point(f, f * 0.033, 2, "person", (360 + f * 12, 400, 440 + f * 12, 520))
         for f in range(15)
     ]
     worker = make_tracked_object(2, "person", worker_points)
@@ -209,6 +209,42 @@ def test_stationary_untouched_carton_without_equipment_no_event():
     assert len(events) == 0
 
 
+def test_static_carton_near_worker_without_motion_no_event():
+    """
+    Verifies that a static carton near a worker does not count as unsafe manual handling
+    unless there is actual motion consistent with handling or repositioning.
+    """
+    rule = NoRequiredEquipmentRule(
+        required_equipment=["forklift", "equipment/forklift"],
+        max_handling_distance_px=120.0,
+        equipment_proximity_distance_px=250.0,
+        min_duration_frames=10,
+    )
+    config = BehaviourConfig()
+
+    carton_points = [
+        make_track_point(f, f * 0.033, 1, "carton", (400, 400, 500, 500))
+        for f in range(15)
+    ]
+    carton = make_tracked_object(1, "carton", carton_points)
+
+    worker_points = [
+        make_track_point(f, f * 0.033, 2, "person", (360, 400, 440, 520))
+        for f in range(15)
+    ]
+    worker = make_tracked_object(2, "person", worker_points)
+
+    events = rule.evaluate(
+        tracked_objects={1: carton, 2: worker},
+        active_track_ids=[1, 2],
+        current_frame_idx=14,
+        timestamp=0.46,
+        video_fps=30.0,
+        config=config,
+    )
+    assert len(events) == 0
+
+
 def test_custom_required_equipment_classes():
     """
     Verifies that required equipment types are fully configurable.
@@ -223,13 +259,13 @@ def test_custom_required_equipment_classes():
     config = BehaviourConfig()
 
     carton_points = [
-        make_track_point(f, f * 0.033, 1, "carton", (400, 400, 500, 500))
+        make_track_point(f, f * 0.033, 1, "carton", (400 + f * 12, 400, 500 + f * 12, 500))
         for f in range(10)
     ]
     carton = make_tracked_object(1, "carton", carton_points)
 
     worker_points = [
-        make_track_point(f, f * 0.033, 2, "person", (360, 400, 440, 520))
+        make_track_point(f, f * 0.033, 2, "person", (360 + f * 12, 400, 440 + f * 12, 520))
         for f in range(10)
     ]
     worker = make_tracked_object(2, "person", worker_points)
@@ -269,9 +305,9 @@ def test_multiple_objects_handled_independently():
     )
     config = BehaviourConfig()
 
-    # Carton #1 + Worker #10 (unassisted)
-    c1_pts = [make_track_point(f, f * 0.033, 1, "carton", (100, 200, 180, 280)) for f in range(10)]
-    w10_pts = [make_track_point(f, f * 0.033, 10, "person", (120, 200, 190, 310)) for f in range(10)]
+    # Carton #1 + Worker #10 (unassisted and moving together)
+    c1_pts = [make_track_point(f, f * 0.033, 1, "carton", (100 + f * 12, 200, 180 + f * 12, 280)) for f in range(10)]
+    w10_pts = [make_track_point(f, f * 0.033, 10, "person", (120 + f * 12, 200, 190 + f * 12, 310)) for f in range(10)]
     c1 = make_tracked_object(1, "carton", c1_pts)
     w10 = make_tracked_object(10, "person", w10_pts)
 
@@ -318,11 +354,11 @@ def test_event_metrics_and_explanation_contents():
     config = BehaviourConfig()
 
     carton_points = [
-        make_track_point(f, f * 0.033, 5, "carton", (300, 300, 400, 400))
+        make_track_point(f, f * 0.033, 5, "carton", (300 + f * 12, 300, 400 + f * 12, 400))
         for f in range(8)
     ]
     worker_points = [
-        make_track_point(f, f * 0.033, 7, "person", (290, 300, 370, 420))
+        make_track_point(f, f * 0.033, 7, "person", (290 + f * 12, 300, 370 + f * 12, 420))
         for f in range(8)
     ]
     carton = make_tracked_object(5, "carton", carton_points)
@@ -409,9 +445,8 @@ def test_behaviour_engine_full_integration_with_equipment_rule():
     tracker = ObjectTracker()
 
     # Manually populate tracker with 12 frames of manual unassisted handling
-    c_pts = [make_track_point(f, f * 0.033, 1, "carton", (200, 200, 300, 300)) for f in range(12)]
-    w_pts = [make_track_point(f, f * 0.033, 2, "person", (210, 200, 290, 320)) for f in range(12)]
-
+    c_pts = [make_track_point(f, f * 0.033, 1, "carton", (200 + f * 12, 200, 300 + f * 12, 300)) for f in range(12)]
+    w_pts = [make_track_point(f, f * 0.033, 2, "person", (210 + f * 12, 200, 290 + f * 12, 320)) for f in range(12)]
     carton = make_tracked_object(1, "carton", c_pts)
     worker = make_tracked_object(2, "person", w_pts)
 

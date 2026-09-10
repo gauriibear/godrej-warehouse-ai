@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 4
+names: ['carton', 'forklift', 'pallet', 'person']
+
+roboflow:
+  workspace: shahana-suresh-s-workspace
+  project: warehouse-environment
+  version: 1
+  license: Private
+  url: https://app.roboflow.com/shahana-suresh-s-workspace/warehouse-environment/1

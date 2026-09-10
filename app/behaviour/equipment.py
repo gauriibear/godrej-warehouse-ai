@@ -167,11 +167,17 @@ class NoRequiredEquipmentRule(BaseBehaviourRule):
                 # Carton is resting untouched; no manual handling
                 continue
 
-            # 3. Temporal persistence: verify manual handling has persisted for min_duration frames
+            # 3. Temporal persistence + actual handling motion: a resting carton near a worker
+            # must not trigger solely because it is close by. Require at least a meaningful
+            # displacement of the carton or worker over the same handling window.
             consecutive_handling = 0
+            handling_motion_px = 0.0
+            motion_frames = 0
             w_traj = interacting_worker.trajectory
             w_frame_map = {tp.frame_idx: tp for tp in w_traj}
 
+            previous_c_tp = None
+            previous_w_tp = None
             for c_tp in reversed(c_traj):
                 w_tp = w_frame_map.get(c_tp.frame_idx)
                 if w_tp is None:
@@ -181,36 +187,51 @@ class NoRequiredEquipmentRule(BaseBehaviourRule):
                 dist_c = self.euclidean_dist(c_tp.center, w_tp.center)
                 if min(dist_b, dist_c) <= max_handling_dist:
                     consecutive_handling += 1
+                    if previous_c_tp is not None and previous_w_tp is not None:
+                        carton_delta = self.euclidean_dist(c_tp.center, previous_c_tp.center)
+                        worker_delta = self.euclidean_dist(w_tp.center, previous_w_tp.center)
+                        motion_step = max(carton_delta, worker_delta)
+                        if motion_step > 1.5:
+                            handling_motion_px += motion_step
+                            motion_frames += 1
+                    previous_c_tp = c_tp
+                    previous_w_tp = w_tp
                 else:
                     break
 
-            if consecutive_handling >= min_duration:
-                confidence = min(0.95, max(0.70, 0.78 + (consecutive_handling / 40.0) * 0.16))
-                req_names = ", ".join(req_equipment)
+            if consecutive_handling < min_duration:
+                continue
 
-                event = BehaviourEvent(
-                    event_id=f"EVT-NOEQUIP-{carton.track_id}-{interacting_worker.track_id}-F{current_frame_idx}",
-                    rule_name=self.name,
-                    track_id=carton.track_id,
-                    display_label=carton.display_label,
-                    secondary_track_id=interacting_worker.track_id,
-                    secondary_label=interacting_worker.display_label,
-                    class_name=carton.class_name,
-                    frame_idx=current_frame_idx,
-                    timestamp_seconds=timestamp,
-                    confidence=round(confidence, 3),
-                    bbox=c_box,
-                    metrics={
-                        "consecutive_handling_frames": consecutive_handling,
-                        "worker_distance_px": round(min_worker_dist, 1),
-                        "required_equipment": req_equipment,
-                        "equipment_present": False,
-                        "explanation": (
-                            f"Product being handled manually by {interacting_worker.display_label} for "
-                            f"{consecutive_handling} consecutive frames without required equipment ({req_names})."
-                        ),
-                    },
-                )
-                events.append(event)
+            if motion_frames < max(2, min_duration // 4) or handling_motion_px < 12.0:
+                continue
+
+            confidence = min(0.95, max(0.70, 0.78 + (consecutive_handling / 40.0) * 0.16))
+            req_names = ", ".join(req_equipment)
+
+            event = BehaviourEvent(
+                event_id=f"EVT-NOEQUIP-{carton.track_id}-{interacting_worker.track_id}-F{current_frame_idx}",
+                rule_name=self.name,
+                track_id=carton.track_id,
+                display_label=carton.display_label,
+                secondary_track_id=interacting_worker.track_id,
+                secondary_label=interacting_worker.display_label,
+                class_name=carton.class_name,
+                frame_idx=current_frame_idx,
+                timestamp_seconds=timestamp,
+                confidence=round(confidence, 3),
+                bbox=c_box,
+                metrics={
+                    "consecutive_handling_frames": consecutive_handling,
+                    "handling_motion_px": round(handling_motion_px, 1),
+                    "worker_distance_px": round(min_worker_dist, 1),
+                    "required_equipment": req_equipment,
+                    "equipment_present": False,
+                    "explanation": (
+                        f"Product being handled manually by {interacting_worker.display_label} for "
+                        f"{consecutive_handling} consecutive frames without required equipment ({req_names})."
+                    ),
+                },
+            )
+            events.append(event)
 
         return events

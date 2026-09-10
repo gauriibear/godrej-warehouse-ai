@@ -112,6 +112,9 @@ def load_detector(model_name: str, confidence_thresh: float, iou_thresh: float) 
 # Sidebar Controls
 st.sidebar.header("📁 Video Ingestion Source")
 
+custom_model_path = str((project_root / "runs/detect/runs/train/warehouse_detector/weights/best.pt").resolve())
+custom_model_available = Path(custom_model_path).exists()
+
 source_type = st.sidebar.radio(
     "Choose video input method:",
     ["Upload Video File (.mp4)", "Select from Sample Videos"],
@@ -150,11 +153,20 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Detection Parameters")
 
+model_options = ["yolo11n.pt", "yolov8n.pt", "yolov8s.pt"]
+if custom_model_available:
+    model_options.insert(0, custom_model_path)
+
+if custom_model_available:
+    st.sidebar.success("Custom warehouse model detected and selected by default.")
+else:
+    st.sidebar.warning("Custom warehouse model not found; generic YOLO weights are in use.")
+
 model_choice = st.sidebar.selectbox(
     "YOLO Model Architecture",
-    ["yolo11n.pt", "yolov8n.pt", "yolov8s.pt"],
-    index=0,
-    help="Select the pretrained YOLO object detection backbone.",
+    model_options,
+    index=0 if custom_model_available else 0,
+    help="Use the trained warehouse model for carton/forklift/pallet/person detection. Generic YOLO models remain available as fallback.",
 )
 
 conf_threshold = st.sidebar.slider(

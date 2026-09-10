@@ -26,6 +26,9 @@ def main():
         if Path("videos/people_walking.mp4").exists()
         else "videos/warehouse_cctv_sample.mp4"
     )
+    default_model = str((project_root / "runs/detect/runs/train/warehouse_detector/weights/best.pt").resolve())
+    if not Path(default_model).exists():
+        default_model = "yolo11n.pt"
 
     parser = argparse.ArgumentParser(
         description="Godrej Warehouse AI - Risk Engine & Incident Evidence Pipeline (Stage 5)"
@@ -41,8 +44,8 @@ def main():
         "--model",
         "-m",
         type=str,
-        default="yolo11n.pt",
-        help="YOLO model architecture / weights (e.g., yolo11n.pt, yolov8n.pt)",
+        default=default_model,
+        help="YOLO model architecture / weights (e.g., custom warehouse model or yolo11n.pt)",
     )
     parser.add_argument(
         "--conf",
@@ -50,6 +53,12 @@ def main():
         type=float,
         default=0.25,
         help="Confidence threshold for object detection (default: 0.25)",
+    )
+    parser.add_argument(
+        "--target-classes",
+        type=str,
+        default="person,carton,forklift,pallet",
+        help="Comma-separated classes to retain (default: person,carton,forklift,pallet)",
     )
     parser.add_argument(
         "--max-frames",
@@ -95,12 +104,15 @@ def main():
         print("Please place a video in the `videos/` folder or specify `--video <path>`.")
         sys.exit(1)
 
+    target_classes = [c.strip().lower() for c in args.target_classes.split(",") if c.strip()]
+
     # ── Initialise Detector ────────────────────────────────────────────
     print(f"\n[INFO] Loading YOLO Detector (Model: {args.model}, Conf: {args.conf:.2f})...")
     try:
         detector = ObjectDetector(
             model_name_or_path=args.model,
             confidence_threshold=args.conf,
+            target_classes=target_classes,
         )
         print("[SUCCESS] YOLO Detector initialised successfully.")
     except Exception as e:
